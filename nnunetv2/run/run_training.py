@@ -281,5 +281,8 @@ if __name__ == '__main__':
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['nnUNet_raw'] = '/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_raw/'
+    os.environ['nnUNet_preprocessed'] = "/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_preprocessed"
+    os.environ['nnUNet_results'] = "/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_trained_models"
     # multiprocessing.set_start_method("spawn")
     run_training_entry()

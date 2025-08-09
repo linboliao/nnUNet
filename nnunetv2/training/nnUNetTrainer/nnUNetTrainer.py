@@ -58,6 +58,7 @@ from nnunetv2.training.logging.nnunet_logger import nnUNetLogger
 from nnunetv2.training.loss.compound_losses import DC_and_CE_loss, DC_and_BCE_loss
 from nnunetv2.training.loss.deep_supervision import DeepSupervisionWrapper
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn, MemoryEfficientSoftDiceLoss
+from nnunetv2.training.loss.hausdorff import HausdorffDTLoss
 from nnunetv2.training.lr_scheduler.polylr import PolyLRScheduler
 from nnunetv2.utilities.collate_outputs import collate_outputs
 from nnunetv2.utilities.crossval_split import generate_crossval_split
@@ -397,6 +398,7 @@ class nnUNetTrainer(object):
             loss = DC_and_CE_loss({'batch_dice': self.configuration_manager.batch_dice,
                                    'smooth': 1e-5, 'do_bg': False, 'ddp': self.is_ddp}, {}, weight_ce=1, weight_dice=1,
                                   ignore_label=self.label_manager.ignore_label, dice_class=MemoryEfficientSoftDiceLoss)
+        # loss = HausdorffDTLoss()
 
         if self._do_i_compile():
             loss.dc = torch.compile(loss.dc)

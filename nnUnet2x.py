@@ -11,10 +11,10 @@ import json
 import sys
 import subprocess
 import shutil
-
+from pathlib import Path
 from wsi import WSIOperator
 
-i = 4
+i = 0
 # 配置环境变量
 os.environ["PYTHONPATH"] = "/NAS3/lbliao/Code/nnUNet:$PYTHONPATH"
 os.environ["nnUNet_raw"] = "/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_raw/"
@@ -25,11 +25,11 @@ os.environ["CUDA_VISIBLE_DEVICES"] = f"{i}"
 # 固定参数
 LEVEL = 0
 PATCH_SIZE = 1024
-NNUNET_DATASET_ID = f"Dataset002_GLAND"
+NNUNET_DATASET_ID = f"Dataset005_GLAND"
 CONFIG_NAME = "2d"
-TEMP_IMAGE_DIR = f"/NAS3/lbliao/Data/MXB/gleason/0712/tmp/wsi_patches_{i}"
+TEMP_IMAGE_DIR = f"/NAS3/lbliao/Data/MXB/Detection/0318/tmp/wsi_patches_{i}"
 os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
-PREDICTION_OUTPUT_DIR = f"/NAS3/lbliao/Data/MXB/gleason/0712/tmp/prediction_results_{i}"
+PREDICTION_OUTPUT_DIR = f"/NAS3/lbliao/Data/MXB/Detection/0318/tmp/prediction_results_{i}"
 COORD_MAPPING_FILE = os.path.join(TEMP_IMAGE_DIR, "coord_mapping.json")  # 坐标映射文件
 
 
@@ -54,30 +54,71 @@ def process_patch(args):
 
 
 def extract_contours(mask_image):
-    """从掩码图像中提取轮廓并转换为GeoJSON格式"""
-    mask_np = np.array(mask_image)
-    contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    """从掩码图像中提取轮廓并转换为GeoJSON格式
+    值1: prostate (绿色)
+    值2: cancer (红色)
+    """
+    mask_np = np.array(mask_image, dtype=np.uint8)
 
+    # 创建不同类别的二值化掩码
+    masks = [np.where(mask_np == i, 255, 0).astype(np.uint8) for i in range(1, np.max(mask_np)+1)]
+    pp_dict = {
+        1: {"classification": {"name": "prostate", "color": [0, 255, 0]}},
+        2: {"classification": {"name": "cancer", "color": [255, 0, 0]}},
+    }
     features = []
-    for contour in contours:
-        # 多边形近似平滑
-        epsilon = 0.001 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
+    for i, mask in enumerate(masks):
 
-        # 转换为geojson格式 (注意坐标转换: [x,y] -> [列,行])
-        coordinates = []
-        for point in approx:
-            pt = point[0]  # 轮廓点的格式为[[x,y]]
-            coordinates.append([float(pt[0]), float(pt[1])])
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            epsilon = 0.001 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
 
-        # 确保多边形闭合
-        if not np.array_equal(coordinates[0], coordinates[-1]):
-            coordinates.append(coordinates[0])
+            coordinates = []
+            for point in approx:
+                pt = point[0]
+                coordinates.append([float(pt[0]), float(pt[1])])
 
-        poly = geojson.Polygon([coordinates])
-        features.append(geojson.Feature(geometry=poly))
+            if not np.array_equal(coordinates[0], coordinates[-1]):
+                coordinates.append(coordinates[0])
+
+            poly = geojson.Polygon([coordinates])
+            feature = geojson.Feature(
+                geometry=poly,
+                properties=pp_dict[i + 1]
+            )
+            features.append(feature)
+            if i == 2:
+                print(f'存在 癌症标签')
 
     return geojson.FeatureCollection(features)
+
+
+# def extract_contours(mask_image):
+#     """从掩码图像中提取轮廓并转换为GeoJSON格式"""
+#     mask_np = np.array(mask_image)
+#     contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#
+#     features = []
+#     for contour in contours:
+#         # 多边形近似平滑
+#         epsilon = 0.001 * cv2.arcLength(contour, True)
+#         approx = cv2.approxPolyDP(contour, epsilon, True)
+#
+#         # 转换为geojson格式 (注意坐标转换: [x,y] -> [列,行])
+#         coordinates = []
+#         for point in approx:
+#             pt = point[0]  # 轮廓点的格式为[[x,y]]
+#             coordinates.append([float(pt[0]), float(pt[1])])
+#
+#         # 确保多边形闭合
+#         if not np.array_equal(coordinates[0], coordinates[-1]):
+#             coordinates.append(coordinates[0])
+#
+#         poly = geojson.Polygon([coordinates])
+#         features.append(geojson.Feature(geometry=poly))
+#
+#     return geojson.FeatureCollection(features)
 
 
 def main(wsi_path, output_geojson):
@@ -213,18 +254,17 @@ def main(wsi_path, output_geojson):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WSI分割与轮廓生成工具")
-    parser.add_argument("--wsi_folder", default='/NAS3/lbliao/Data/MXB/gleason/0712/slides', help="输入WSI文件路径 (.svs/.tif/.ndpi)")
-    parser.add_argument("--output_folder", default='/NAS3/lbliao/Data/MXB/gleason/0712/segement', help="输出GeoJSON文件路径")
+    parser.add_argument("--wsi_folder", default='/NAS3/lbliao/Data/MXB/gleason/ynzl/slides', help="输入WSI文件路径 (.svs/.tif/.ndpi)")
+    parser.add_argument("--output_folder", default='/NAS3/Data1/lbliao/Data/MXB/gleason/ynzl/nnunet', help="输出GeoJSON文件路径")
 
     args = parser.parse_args()
     os.makedirs(args.output_folder, exist_ok=True)
-    # if not os.path.exists(args.wsi_path):
-    #     print(f"错误: WSI文件不存在 - {args.wsi_path}")
-    #     sys.exit(1)
     wsis = os.listdir(args.wsi_folder)
-    step = 10
+    step = 100
     for wsi in wsis[step * i: step * (i + 1)]:
+        if wsi not in ['20250244312.svs','2025099815.svs']:
+            continue
         wsi_path = os.path.join(args.wsi_folder, wsi)
-        basename = os.path.basename(wsi_path)
+        basename = Path(wsi_path).stem
         output_path = os.path.join(args.output_folder, f"{basename}.geojson")
         main(wsi_path, output_path)

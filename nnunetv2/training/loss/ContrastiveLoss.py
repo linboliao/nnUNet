@@ -1,136 +1,135 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
-class SimpleContrastiveLoss(nn.Module):
-    """
-    简化版对比学习损失模块
-    核心功能：通过InfoNCE损失拉近正样本距离，推开负样本距离
-    """
-
-    def __init__(self, temperature=0.5, min_views=2):
+class SegContrastiveLoss(nn.Module):
+    def __init__(self, margin=1.0,
+                 ignore_background=True,
+                 sample_rate=0.001,
+                 chunk_size=128,
+                 max_points=1000,
+                 use_fp16=True):
         """
-        :param temperature: 温度系数，控制相似度分布的尖锐程度（值越小对困难样本越敏感）
-        :param min_views: 每类最少采样数，避免样本不足的类别
+        10GB显存优化的分割对比损失
+        Args:
+            margin: 负样本边界值
+            ignore_background: 必须启用以节省显存
+            sample_rate: 初始采样率(0.001~0.005)
+            chunk_size: 分块计算大小(64~256)
+            max_points: 最大采样点数(硬性限制)
+            use_fp16: 启用FP16混合精度
         """
         super().__init__()
-        self.temperature = temperature
-        self.min_views = min_views
-        self.eps = 1e-10  # 数值稳定常数
+        self.margin = margin
+        self.ignore_bg = ignore_background
+        self.sample_rate = max(0.001, sample_rate)
+        self.chunk_size = chunk_size
+        self.max_points = max_points
+        self.use_fp16 = use_fp16
 
-    def forward(self, features, labels):
-        """
-        :param features: 特征张量 (B, C, H, W)
-        :param labels: 类别标签 (B, H, W)
-        :return: 对比损失值
-        """
-        # 1. 降采样标签匹配特征尺寸
-        scale = features.shape[2] / labels.shape[1]
-        labels_ds = F.interpolate(
-            labels.unsqueeze(1).float(),
-            scale_factor=scale,
-            mode='nearest'
-        ).long().squeeze(1)
+    def _dynamic_sampling(self, feats, labels):
+        B, C, H, W = feats.size()
+        total_pixels = H * W
+        target_samples = min(self.max_points, int(total_pixels * self.sample_rate))
+        target_samples = max(1, target_samples)  # 确保至少采样1个点 [3,7](@ref)
 
-        # 2. 采样锚点特征
-        sampled_feats, sampled_labels = self._sample_anchors(features, labels_ds)
+        # 网格采样
+        grid_step = max(2, int(math.sqrt(total_pixels / target_samples)))
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(0, H, grid_step),
+            torch.arange(0, W, grid_step),
+            indexing='ij'
+        )
+        grid_idx = (grid_y * W + grid_x).flatten()
 
-        # 3. 计算InfoNCE损失
-        return self._compute_infonce(sampled_feats, sampled_labels)
+        # 随机采样补足
+        rand_samples = target_samples - len(grid_idx)
+        if rand_samples > 0:
+            rand_idx = torch.randint(0, total_pixels, (rand_samples,))
+            total_idx = torch.cat([grid_idx, rand_idx])
+        else:
+            total_idx = grid_idx[:target_samples]
 
-    def _sample_anchors(self, features, labels):
-        """采样每类特征向量"""
-        B, C, H, W = features.shape
-        features_flat = features.view(B, C, -1)  # (B, C, H*W)
-        labels_flat = labels.view(B, -1)  # (B, H*W)
+        flat_feats = feats.view(B, C, -1)[..., total_idx.to(feats.device)]
+        flat_labels = labels.view(B, 1, -1)[..., total_idx.to(labels.device)]
+        return flat_feats, flat_labels
 
-        sampled_feats = []
-        sampled_labels = []
+    def _compute_chunk_loss(self, anchor_feat, anchor_label, global_feats, global_labels):
+        """Inf-CL分块计算策略核心"""
+        # 计算当前锚点与全局特征距离
+        dist = torch.norm(global_feats - anchor_feat, p=2, dim=1)  # [N]
 
-        # 遍历batch内每张图像的类别
-        for b in range(B):
-            unique_classes = torch.unique(labels_flat[b])
-            for cls in unique_classes:
-                if cls == -1: continue  # 跳过忽略类
+        # 正负样本掩码
+        pos_mask = (global_labels == anchor_label)
+        neg_mask = ~pos_mask
 
-                # 获取当前类别的所有特征
-                cls_mask = (labels_flat[b] == cls)
-                cls_feats = features_flat[b, :, cls_mask]
+        # 排除自身
+        self_mask = torch.isclose(dist, torch.tensor(0.0, device=dist.device))
+        pos_mask = pos_mask & ~self_mask
 
-                # 确保满足最小采样数
-                if cls_feats.shape[1] < self.min_views:
+        # 计算损失分量
+        pos_loss = 0.5 * (dist[pos_mask] ** 2).sum() if pos_mask.any() else 0.0
+        neg_loss = 0.5 * F.relu(self.margin - dist[neg_mask]).pow(2).sum() if neg_mask.any() else 0.0
+
+        # 有效样本对数
+        valid_pairs = pos_mask.sum().item() + neg_mask.sum().item()
+        return pos_loss + neg_loss, valid_pairs
+
+    def forward(self, inputs, labels):
+        # 混合精度上下文
+        with torch.cuda.amp.autocast(enabled=self.use_fp16):
+            if self.use_fp16:
+                inputs = inputs.half()
+
+            # 1. 动态空间采样
+            feats, labels = self._dynamic_sampling(inputs, labels)  # [B, C, S]
+            feats = feats.permute(0, 2, 1)  # [B, S, C]
+
+            # 2. 背景过滤
+            B, S, C = feats.size()
+            if self.ignore_bg:
+                non_bg_mask = (labels.squeeze(1) != 0)  # [B, S]
+            else:
+                non_bg_mask = torch.ones(B, S, dtype=torch.bool, device=feats.device)
+
+            total_loss = 0
+            valid_batch_count = 0
+
+            # 3. 逐样本处理
+            for b in range(B):
+                # 提取有效点
+                cur_mask = non_bg_mask[b]  # [S]
+                if cur_mask.sum() < 2:
                     continue
 
-                # 随机采样特征
-                rand_idx = torch.randperm(cls_feats.shape[1])[:self.min_views]
-                sampled_feats.append(cls_feats[:, rand_idx])
-                sampled_labels.append(cls.expand(self.min_views))
+                cur_feats = feats[b][cur_mask]  # [N, C]
+                cur_labels = labels[b, 0, cur_mask]  # [N]
+                N = len(cur_feats)
 
-        return torch.cat(sampled_feats, dim=1).permute(1, 0), torch.cat(sampled_labels)
+                # 4. Inf-CL分块计算
+                chunk_loss = 0
+                total_valid_pairs = 0
 
-    def _compute_infonce(self, feats, labels):
-        """核心InfoNCE损失计算"""
-        # 特征归一化 (L2归一化)
-        feats = F.normalize(feats, p=2, dim=1)  # (N, C)
+                # 分块处理锚点
+                for i in range(0, N, self.chunk_size):
+                    chunk_end = min(i + self.chunk_size, N)
+                    for j in range(i, chunk_end):
+                        # 单锚点计算（避免矩阵存储）
+                        anchor_feat = cur_feats[j].unsqueeze(0)  # [1, C]
+                        anchor_label = cur_labels[j].unsqueeze(0)  # [1]
 
-        # 计算相似度矩阵
-        sim_matrix = torch.mm(feats, feats.T) / self.temperature  # (N, N)
+                        # 计算当前锚点损失
+                        batch_loss, valid_pairs = self._compute_chunk_loss(
+                            anchor_feat, anchor_label, cur_feats, cur_labels
+                        )
+                        chunk_loss += batch_loss
+                        total_valid_pairs += valid_pairs
 
-        # 构建正负样本掩码
-        label_matrix = labels.unsqueeze(1) == labels.unsqueeze(0)  # (N, N)
-        diag_mask = ~torch.eye(len(labels), dtype=torch.bool, device=feats.device)
-        pos_mask = label_matrix & diag_mask  # 排除自身
+                # 聚合批次损失
+                if total_valid_pairs > 0:
+                    total_loss += chunk_loss / total_valid_pairs
+                    valid_batch_count += 1
 
-        # 计算InfoNCE损失
-        max_val = sim_matrix.max(dim=1, keepdim=True).values.detach()
-        exp_sim = torch.exp(sim_matrix - max_val)  # 数值稳定
-
-        pos_sum = (exp_sim * pos_mask).sum(dim=1)  # 正样本相似度和
-        neg_sum = (exp_sim * ~label_matrix).sum(dim=1)  # 负样本相似度和
-
-        # 最终损失计算
-        loss = -torch.log(pos_sum / (pos_sum + neg_sum + self.eps))
-        return loss.mean()
-
-
-class MultiScaleContrastiveLoss(nn.Module):
-    """
-    处理多尺度特征的对比损失计算
-    对每个尺度的特征和标签分别计算SimpleContrastiveLoss后求平均
-    """
-
-    def __init__(self, temperature=0.5, min_views=2):
-        super().__init__()
-        self.base_loss = SimpleContrastiveLoss(temperature, min_views)
-
-    def forward(self, features_list, labels_list):
-        """
-        :param features_list: 多尺度特征列表 (L, B, C, H_l, W_l)
-        :param labels_list: 多尺度标签列表 (L, B, 1, H_l, W_l)
-        :return: 平均对比损失值
-        """
-        total_loss = 0.0
-        valid_scales = 0
-
-        for feats, lbls in zip(features_list, labels_list):
-            # 调整标签张量维度 (B, 1, H, W) -> (B, H, W)
-            lbls_adjusted = lbls.squeeze(1)
-
-            # 确保标签与特征空间尺寸匹配
-            if lbls_adjusted.shape[1:] != feats.shape[2:]:
-                scale_factor = feats.shape[2] / lbls_adjusted.shape[1]
-                lbls_ds = F.interpolate(
-                    lbls_adjusted.float().unsqueeze(1),
-                    scale_factor=scale_factor,
-                    mode='nearest'
-                ).squeeze(1).long()
-            else:
-                lbls_ds = lbls_adjusted
-
-            # 计算当前尺度的对比损失
-            loss = self.base_loss(feats, lbls_ds)
-            total_loss += loss
-            valid_scales += 1
-
-        return total_loss / valid_scales if valid_scales > 0 else torch.tensor(0.0)
+            return total_loss / valid_batch_count if valid_batch_count > 0 else 0.0

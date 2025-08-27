@@ -3,6 +3,8 @@ from nnunetv2.training.loss.dice import SoftDiceLoss, MemoryEfficientSoftDiceLos
 from nnunetv2.training.loss.robust_ce_loss import RobustCrossEntropyLoss, TopKLoss
 from nnunetv2.utilities.helpers import softmax_helper_dim1
 from torch import nn
+from nnunetv2.training.loss.hausdorff import compute_hd95_loss, HausdorffDTLoss, MultiClassHausdorffDTLoss
+from nnunetv2.training.loss.ContrastiveLoss import SegContrastiveLoss
 
 
 class DC_and_CE_loss(nn.Module):
@@ -27,6 +29,8 @@ class DC_and_CE_loss(nn.Module):
 
         self.ce = RobustCrossEntropyLoss(**ce_kwargs)
         self.dc = dice_class(apply_nonlin=softmax_helper_dim1, **soft_dice_kwargs)
+        self.hd = MultiClassHausdorffDTLoss(alpha=0.5)
+        self.cl = SegContrastiveLoss()
 
     def forward(self, net_output: torch.Tensor, target: torch.Tensor):
         """
@@ -51,8 +55,12 @@ class DC_and_CE_loss(nn.Module):
             if self.weight_dice != 0 else 0
         ce_loss = self.ce(net_output, target[:, 0]) \
             if self.weight_ce != 0 and (self.ignore_label is None or num_fg > 0) else 0
-
-        result = self.weight_ce * ce_loss + self.weight_dice * dc_loss
+        # hd_loss = compute_hd95_loss(net_output, target_dice)
+        # hd_loss = self.hd(net_output, target_dice)
+        hd_loss = 0
+        cl_loss = self.cl(net_output, target_dice)
+        # cl_loss = 0
+        result = self.weight_ce * ce_loss + self.weight_dice * dc_loss + hd_loss + cl_loss
         return result
 
 

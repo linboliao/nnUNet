@@ -20,7 +20,8 @@ Image.MAX_IMAGE_PIXELS = None
 
 LEVEL = 0
 patch_size = 1024
-
+name_to_id = {}
+id_counter = 1
 
 def geojson_to_mask(geojson_path, slide_path, output_dir):
     """
@@ -30,6 +31,7 @@ def geojson_to_mask(geojson_path, slide_path, output_dir):
     :param resolution: 输出分辨率（单位与 GeoJSON 坐标系一致）
     """
     # 1. 读取 GeoJSON 并获取边界范围
+    global id_counter
     gdf = gpd.read_file(geojson_path)
 
     wsi = WSIOperator(slide_path)
@@ -40,25 +42,32 @@ def geojson_to_mask(geojson_path, slide_path, output_dir):
     shapes = []
     unknow = []
     # 遍历GeoDataFrame的每一行（同时获取几何体和属性）
+
+
     for idx, row in gdf.iterrows():
         geom = row.geometry
         # 根据分类名称设置填充值
 
-        classification = row['classification']
-        if isinstance(classification, str):
-            classification = json.loads(classification)
-        if not classification:
-            fill_value = 2
-        elif classification['name'] in ['prostate', 'Negative', 'non-cancer']:
-            fill_value = 1
-        elif classification['name'] in ['cancer', 'Positive']:
-            fill_value = 2
-        elif classification['name'] == 'Other':
-            continue
-        elif classification['name'] in ['lymphocyte', 'vessle', 'nerve', '杂质']:
-            fill_value = 3
-        else:
-            fill_value = 2
+        # classification = row['classification']
+        # if isinstance(classification, str):
+        #     classification = json.loads(classification)
+        # if not classification:
+        #     fill_value = 2
+        # elif classification['name'] in ['prostate', 'Negative', 'non-cancer']:
+        #     fill_value = 1
+        # elif classification['name'] in ['cancer', 'Positive']:
+        #     fill_value = 2
+        # elif classification['name'] == 'Other':
+        #     continue
+        # elif classification['name'] in ['lymphocyte', 'vessle', 'nerve', '杂质']:
+        #     fill_value = 3
+        # else:
+        #     fill_value = 2
+        name = row['name']
+        if name not in name_to_id:
+            name_to_id[name] = id_counter
+            id_counter += 1
+        fill_value = name_to_id[name]
 
         # 处理MultiPolygon（拆分为单个多边形）
         if geom.geom_type == 'MultiPolygon':
@@ -137,25 +146,28 @@ def geojson_to_mask(geojson_path, slide_path, output_dir):
     print(f"共保存图片{count}张")
 
     print(f"✅ Processed {slide} → {num_rows}x{num_cols} patches")
+    return name_to_id
 
 
 if __name__ == "__main__":
     slide_dir = '/NAS3/lbliao/Data/MXB/segment/0716/slides'
     geo_dir = '/NAS3/lbliao/Data/MXB/segment/0716/manual'
-    patch_dir = '/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_raw/Dataset006_GLAND'
+    patch_dir = '/NAS3/lbliao/Data/MXB/segment/dataset/nnUnet/nnUNet_raw/Dataset001'
     slides = [
-        '/NAS3/lbliao/Data/MXB/segment/0716/slides',
-        '/NAS3/lbliao/Data/MXB/segment/YNZL修订/slides',
-        '/NAS3/lbliao/Data/MXB/segment/无癌病例/slides',
-        '/NAS3/lbliao/Data/MXB/segment/补充的分割图像/slides',
-        '/NAS3/lbliao/Data/MXB/segment/补充神经节标注/slides',
+        '/NAS145/Data/JF-cells/slides',
+        # '/NAS3/lbliao/Data/MXB/segment/0716/slides',
+        # '/NAS3/lbliao/Data/MXB/segment/YNZL修订/slides',
+        # '/NAS3/lbliao/Data/MXB/segment/无癌病例/slides',
+        # '/NAS3/lbliao/Data/MXB/segment/补充的分割图像/slides',
+        # '/NAS3/lbliao/Data/MXB/segment/补充神经节标注/slides',
     ]
     geos = [
-        '/NAS3/lbliao/Data/MXB/segment/0716/manual',
-        '/NAS3/lbliao/Data/MXB/segment/YNZL修订/geojson',
-        '/NAS3/lbliao/Data/MXB/segment/无癌病例/geojson',
-        '/NAS3/lbliao/Data/MXB/segment/补充的分割图像/geojson',
-        '/NAS3/lbliao/Data/MXB/segment/补充神经节标注/geojson',
+        '/NAS145/Data/JF-cells/merger',
+        # '/NAS3/lbliao/Data/MXB/segment/0716/manual',
+        # '/NAS3/lbliao/Data/MXB/segment/YNZL修订/geojson',
+        # '/NAS3/lbliao/Data/MXB/segment/无癌病例/geojson',
+        # '/NAS3/lbliao/Data/MXB/segment/补充的分割图像/geojson',
+        # '/NAS3/lbliao/Data/MXB/segment/补充神经节标注/geojson',
     ]
     for slide_dir, geo_dir in zip(slides, geos):
         tasks = []
@@ -172,7 +184,8 @@ if __name__ == "__main__":
     # 创建数据字典（保持原始结构）
     data = {
         "channel_names": {"0": "R", "1": "G", "2": "B"},
-        "labels": {"background": 0, "prostate": 1, "cancer": 2, "other": 3},
+        # "labels": {"background": 0, "prostate": 1, "cancer": 2, "other": 3},
+        "labels": name_to_id,
         "numTraining": len(os.listdir(os.path.join(patch_dir, 'imagesTr'))),
         "file_ending": ".png"
     }

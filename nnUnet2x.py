@@ -254,16 +254,16 @@ def main(wsi_path, output_geojson):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WSI分割与轮廓生成工具")
-    parser.add_argument("--wsi_folder", default='/NAS3/lbliao/Data/MXB/gleason/ynzl/slides', help="输入WSI文件路径 (.svs/.tif/.ndpi)")
-    parser.add_argument("--output_folder", default='/NAS3/Data1/lbliao/Data/MXB/gleason/ynzl/nnunet', help="输出GeoJSON文件路径")
+    parser.add_argument("--wsi_folder", default='/NAS145/Data/ProstateSeg/同一切片HE和前双图像/data/HE', help="输入WSI文件路径 (.svs/.tif/.ndpi)")
+    parser.add_argument("--output_folder", default='/NAS145/Data/ProstateSeg/同一切片HE和前双图像/data/nnunet', help="输出GeoJSON文件路径")
 
     args = parser.parse_args()
     os.makedirs(args.output_folder, exist_ok=True)
     wsis = os.listdir(args.wsi_folder)
     step = 100
     for wsi in wsis[step * i: step * (i + 1)]:
-        if wsi not in ['20250244312.svs','2025099815.svs']:
-            continue
+        # if wsi not in ['20250244312.svs','2025099815.svs']:
+        #     continue
         wsi_path = os.path.join(args.wsi_folder, wsi)
         basename = Path(wsi_path).stem
         output_path = os.path.join(args.output_folder, f"{basename}.geojson")

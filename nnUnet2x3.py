@@ -220,10 +220,10 @@ def process_one_wsi(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="多WSI并行分割与轮廓生成")
-    parser.add_argument("--wsi_folder", default='/NAS3/lbliao/Data/MXB/gleason/ynzl/slides', help="WSI文件夹路径")
-    parser.add_argument("--output_folder", default='/NAS3/lbliao/Data/MXB/gleason/ynzl/nnunet', help="输出GeoJSON文件夹")
-    parser.add_argument("--gpus", default="0", help="可用GPU列表，如'0,1,2'")
-    parser.add_argument("--temp_dir", default="/tmp", help="临时文件基础目录")
+    parser.add_argument("--wsi_folder", default='/NAS145/Data/ProstateSeg/同一切片HE和前双图像/data/HE', help="WSI文件夹路径")
+    parser.add_argument("--output_folder", default='/NAS145/Data/ProstateSeg/同一切片HE和前双图像/data/nnunet', help="输出GeoJSON文件夹")
+    parser.add_argument("--gpus", default="2", help="可用GPU列表，如'0,1,2'")
+    parser.add_argument("--temp_dir", default="/NAS145/Data/ProstateSeg/同一切片HE和前双图像/data/tmp", help="临时文件基础目录")
     parser.add_argument("--workers", type=int, default=4, help="并行进程数")
 
     args = parser.parse_args()
